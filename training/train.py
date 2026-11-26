@@ -75,6 +75,10 @@ def _worker_loop(
     prev_keys = 0
     prev_items = 0
     prev_hp = 100.0
+    prev_xy = (0.0, 0.0)
+    stuck_steps = 0
+    expl_total = 0.0
+    ep_comp = {"exit": 0.0, "kill": 0.0, "prog": 0.0, "expl": 0.0, "dmg": 0.0, "aim": 0.0}
     step_idx = 0
 
     def load_map(wad_path: str, map_name: str):
@@ -85,7 +89,7 @@ def _worker_loop(
         cur_map = (wad_path, map_name)
 
     def reset_episode(map_idx: int):
-        nonlocal visited_cells, opened_doors, prev_action, use_cooldown, prev_kills, prev_dmg, prev_keys, prev_items, prev_hp, step_idx
+        nonlocal visited_cells, opened_doors, prev_action, use_cooldown, prev_kills, prev_dmg, prev_keys, prev_items, prev_hp, prev_xy, stuck_steps, expl_total, ep_comp, step_idx
         wad_path, map_name = map_pool[map_idx]
         if cur_map != (wad_path, map_name):
             load_map(wad_path, map_name)
@@ -100,6 +104,10 @@ def _worker_loop(
         prev_keys = int(sum(int(k) for k in priv.get("keys", []))) if isinstance(priv.get("keys"), (list, tuple, np.ndarray)) else int(obs["vitals"][8:14].sum())
         prev_items = int(priv.get("items", 0))
         prev_hp = float(priv.get("health", 100.0))
+        prev_xy = (float(priv["x"]), float(priv["y"]))
+        stuck_steps = 0
+        expl_total = 0.0
+        ep_comp = {"exit": 0.0, "kill": 0.0, "prog": 0.0, "expl": 0.0, "dmg": 0.0, "aim": 0.0}
         step_idx = 0
         return obs, priv
 
@@ -123,33 +131,45 @@ def _worker_loop(
                 if info.get("exit_reached", False):
                     frac_left = max(0.0, 1.0 - priv["tic"] / max(1, episode_ticks))
                     hp_bonus = 0.02 * max(0.0, float(priv.get("health", 0.0)))
-                    reward += 10.0 + 2.0 * frac_left + hp_bonus
+                    r_ex = 10.0 + 2.0 * frac_left + hp_bonus
+                    reward += r_ex
+                    ep_comp["exit"] += r_ex
                 if priv.get("dead", False):
                     reward -= 5.0
+                    ep_comp["dmg"] -= 5.0
 
                 kills = int(priv.get("kills", 0))
                 if kills > prev_kills:
-                    reward += 2.5 * (kills - prev_kills)
+                    r_k = 5.0 * (kills - prev_kills)
+                    reward += r_k
+                    ep_comp["kill"] += r_k
                 prev_kills = kills
 
                 dmg = float(priv.get("damage_taken", 0.0))
                 if dmg > prev_dmg:
-                    reward -= 0.04 * (dmg - prev_dmg)
+                    r_d = -0.05 * (dmg - prev_dmg)
+                    reward += r_d
+                    ep_comp["dmg"] += r_d
                 prev_dmg = dmg
 
                 items = int(priv.get("items", 0))
                 if items > prev_items:
-                    reward += 0.3 * (items - prev_items)
+                    r_it = 0.3 * (items - prev_items)
+                    reward += r_it
+                    ep_comp["prog"] += r_it
                 prev_items = items
 
                 hp = float(priv.get("health", 100.0))
                 if hp > prev_hp and prev_hp < 75.0:
                     reward += 1.2
+                    ep_comp["prog"] += 1.2
                 prev_hp = hp
 
                 cur_keys = int(obs["vitals"][8:14].sum())
                 if cur_keys > prev_keys:
-                    reward += 4.0 * (cur_keys - prev_keys)
+                    r_key = 4.0 * (cur_keys - prev_keys)
+                    reward += r_key
+                    ep_comp["prog"] += r_key
                 prev_keys = cur_keys
 
                 # Progression bonus: door / locked door opened
@@ -159,17 +179,45 @@ def _worker_loop(
                     for s_idx, lock_val in enumerate(door_lock):
                         if lock_val >= 0 and s_idx not in opened_doors and sec_ceil[s_idx] > 8.0:
                             opened_doors.add(s_idx)
-                            reward += 5.0 if lock_val > 0 else 0.8
+                            r_door = 5.0 if lock_val > 0 else 0.8
+                            reward += r_door
+                            ep_comp["prog"] += r_door
 
-                # Exploration bonus: newly visited 96x96 area
+                # Combat aiming shaping: reward shooting when an enemy is centered in FOV
+                ent_m = obs["visible_entities"]["mask"]
+                ent_t = obs["visible_entities"]["entity_type"]
+                ent_f = obs["visible_entities"]["features"]
+                enemy_centered = any(
+                    ent_m[ei] == 1 and ent_t[ei] in (1, 2, 3) and abs(ent_f[ei, 1]) < 0.18 and ent_f[ei, 2] > 0.8
+                    for ei in range(len(ent_m))
+                )
+                if enemy_centered and action[6] == 1 and obs["vitals"][3] > 0:
+                    reward += 0.04
+                    ep_comp["aim"] += 0.04
+
+                # Exploration bonus: newly visited 96x96 area (capped at 3.0 per episode)
                 cell = (int(priv["x"] // 96), int(priv["y"] // 96))
                 first_visit_step = visited_cells.get(cell)
                 loop_closure = 0.0
                 if first_visit_step is None:
                     visited_cells[cell] = step_idx
-                    reward += 0.15
+                    if expl_total < 3.0:
+                        r_exp = min(0.15, 3.0 - expl_total)
+                        expl_total += r_exp
+                        reward += r_exp
+                        ep_comp["expl"] += r_exp
                 elif step_idx - first_visit_step > 8:
                     loop_closure = 1.0
+
+                # Stuck penalty: sitting still / wedged against a wall
+                cur_xy = (float(priv["x"]), float(priv["y"]))
+                if ((cur_xy[0] - prev_xy[0]) ** 2 + (cur_xy[1] - prev_xy[1]) ** 2) < 16.0:
+                    stuck_steps += 1
+                else:
+                    stuck_steps = 0
+                prev_xy = cur_xy
+                if stuck_steps >= 12:
+                    reward -= 0.02
 
                 # Door USE anti-spam penalty (prevents bouncing doors)
                 if action[7] == 1 and use_cooldown > 0:
@@ -185,6 +233,7 @@ def _worker_loop(
                         "keys": cur_keys,
                         "areas": len(visited_cells),
                         "steps": step_idx,
+                        "comp": dict(ep_comp),
                     }
                     obs, _ = reset_episode(int(next_map_idx))
                 else:
@@ -307,6 +356,8 @@ def train(args: argparse.Namespace) -> None:
     recent_returns: list[float] = []
     recent_exits: list[float] = []
     recent_areas: list[int] = []
+    recent_kills: list[int] = []
+    recent_comps: list[dict[str, float]] = []
     ep_returns = np.zeros(N, dtype=np.float64)
     best_score = -1e9
     global_step = 0
@@ -379,6 +430,8 @@ def train(args: argparse.Namespace) -> None:
                             recent_returns.append(float(ep_returns[i]))
                             recent_exits.append(ep_info["exit"])
                             recent_areas.append(ep_info["areas"])
+                            recent_kills.append(ep_info["kills"])
+                            recent_comps.append(ep_info["comp"])
                         ep_returns[i] = 0.0
                         cur_map_indices[i] = next_map_picks[i]
                         new_hx[:, i, :] = 0.0
@@ -478,9 +531,19 @@ def train(args: argparse.Namespace) -> None:
                 mean_ret = float(np.mean(recent_returns[-50:])) if recent_returns else 0.0
                 exit_rate = float(np.mean(recent_exits[-50:])) if recent_exits else 0.0
                 mean_area = float(np.mean(recent_areas[-50:])) if recent_areas else 0.0
+                mean_kills = float(np.mean(recent_kills[-50:])) if recent_kills else 0.0
+                c_tail = recent_comps[-50:]
+                c_str = ""
+                if c_tail:
+                    r_ex = np.mean([c["exit"] for c in c_tail])
+                    r_kl = np.mean([c["kill"] for c in c_tail])
+                    r_pr = np.mean([c["prog"] for c in c_tail])
+                    r_ep = np.mean([c["expl"] for c in c_tail])
+                    r_dm = np.mean([c["dmg"] for c in c_tail])
+                    c_str = f" | R[ex={r_ex:.1f},kl={r_kl:.1f},pr={r_pr:.1f},ep={r_ep:.1f},dm={r_dm:.1f}]"
                 print(
                     f"[Upd {update}/{total_updates} | Steps {global_step}] "
-                    f"FPS={fps:.0f} | Ret={mean_ret:.2f} | Exit={exit_rate*100:.1f}% | Areas={mean_area:.1f} | Ent={entropy.item():.2f} | Loss={loss.item():.3f}"
+                    f"FPS={fps:.0f} | Ret={mean_ret:.2f} | Exit={exit_rate*100:.1f}% | Kills={mean_kills:.2f} | Areas={mean_area:.1f} | Ent={entropy.item():.2f} | Loss={loss.item():.3f}{c_str}"
                 )
                 WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
                 torch.save({"model": net.state_dict(), "step": global_step}, WEIGHTS_PATH)

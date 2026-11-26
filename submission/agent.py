@@ -5,6 +5,7 @@ Contract: docs/CONTRACT.md §6.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -37,6 +38,7 @@ class DoomAgent:
         self.hx: torch.Tensor | None = None
         self.grid: torch.Tensor | None = None
         self.prev_action = np.zeros(NUM_ACTIONS, dtype=np.int8)
+        self.temp = float(os.environ.get("DOOM_EVAL_TEMP", "0.75"))
         self.reset()
 
     def reset(self) -> None:
@@ -50,9 +52,7 @@ class DoomAgent:
         """Return a MultiBinary action: int8 array of shape (9,) with values in {0, 1}."""
         obs_t = preprocess_obs(observation, self.prev_action, self.device)
         logits, _, self.hx, self.grid, _, _ = self.net.forward_step(obs_t, self.hx, self.grid)
-        # Sample stochastically during eval at low temperature or threshold?
-        # Sampling from Bernoulli(probs) prevents deterministic stuck loops in corners/doors.
-        probs = torch.sigmoid(logits).squeeze(0)
+        probs = torch.sigmoid(logits / self.temp).squeeze(0)
         action = torch.bernoulli(probs).to(torch.int8).cpu().numpy()
         self.prev_action = action
         return action
