@@ -222,3 +222,6 @@ _vizdoom.ini
 
 # Local validator / scorer artifacts
 *.lmp
+
+# Generated procedural WAD packs (recreated by training/wad_gen.py)
+training/generated_maps/
