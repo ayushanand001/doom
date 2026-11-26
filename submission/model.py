@@ -129,8 +129,8 @@ class EgocentricGridMemory(nn.Module):
         warped = F.grid_sample(
             grid, sample_grid, mode="bilinear", padding_mode="zeros", align_corners=True
         )
-        # Gentle decay on dynamic channels (enemy=4, item=5), preserve static structure
-        decay = torch.tensor([0.995, 0.99, 0.995, 0.998, 0.70, 0.90], device=device).view(1, GRID_CHANNELS, 1, 1)
+        # Preserve static map structure (visited, walls, doors, locked doors); decay dynamic entities
+        decay = torch.tensor([0.9995, 0.999, 0.9995, 1.0, 0.70, 0.95], device=device).view(1, GRID_CHANNELS, 1, 1)
         warped = warped * decay
 
         # 2. Mark player's current center cell as visited (channel 0)

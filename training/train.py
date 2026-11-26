@@ -74,6 +74,7 @@ def _worker_loop(
     prev_dmg = 0.0
     prev_keys = 0
     prev_items = 0
+    prev_hp = 100.0
     step_idx = 0
 
     def load_map(wad_path: str, map_name: str):
@@ -84,7 +85,7 @@ def _worker_loop(
         cur_map = (wad_path, map_name)
 
     def reset_episode(map_idx: int):
-        nonlocal visited_cells, opened_doors, prev_action, use_cooldown, prev_kills, prev_dmg, prev_keys, prev_items, step_idx
+        nonlocal visited_cells, opened_doors, prev_action, use_cooldown, prev_kills, prev_dmg, prev_keys, prev_items, prev_hp, step_idx
         wad_path, map_name = map_pool[map_idx]
         if cur_map != (wad_path, map_name):
             load_map(wad_path, map_name)
@@ -98,6 +99,7 @@ def _worker_loop(
         prev_dmg = float(priv.get("damage_taken", 0.0))
         prev_keys = int(sum(int(k) for k in priv.get("keys", []))) if isinstance(priv.get("keys"), (list, tuple, np.ndarray)) else int(obs["vitals"][8:14].sum())
         prev_items = int(priv.get("items", 0))
+        prev_hp = float(priv.get("health", 100.0))
         step_idx = 0
         return obs, priv
 
@@ -140,6 +142,11 @@ def _worker_loop(
                     reward += 0.3 * (items - prev_items)
                 prev_items = items
 
+                hp = float(priv.get("health", 100.0))
+                if hp > prev_hp and prev_hp < 75.0:
+                    reward += 1.2
+                prev_hp = hp
+
                 cur_keys = int(obs["vitals"][8:14].sum())
                 if cur_keys > prev_keys:
                     reward += 4.0 * (cur_keys - prev_keys)
@@ -152,7 +159,7 @@ def _worker_loop(
                     for s_idx, lock_val in enumerate(door_lock):
                         if lock_val >= 0 and s_idx not in opened_doors and sec_ceil[s_idx] > 8.0:
                             opened_doors.add(s_idx)
-                            reward += 4.0 if lock_val > 0 else 0.8
+                            reward += 5.0 if lock_val > 0 else 0.8
 
                 # Exploration bonus: newly visited 96x96 area
                 cell = (int(priv["x"] // 96), int(priv["y"] // 96))
