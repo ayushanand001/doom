@@ -34,15 +34,20 @@ if str(SUBMISSION_DIR) not in sys.path:
 from model import NUM_ACTIONS, SpatialDoomNet
 
 
-def _discover_maps() -> list[tuple[str, str]]:
+def _discover_maps(tiers: set[int] | None = None) -> list[tuple[str, str]]:
     """Return list of (wad_path, map_name) across generated packs + two_rooms.wad."""
-    maps: list[tuple[str, str]] = [(str(ROOT / "maps" / "two_rooms.wad"), "MAP01")]
+    maps: list[tuple[str, str]] = []
+    if tiers is None or 1 in tiers:
+        maps.append((str(ROOT / "maps" / "two_rooms.wad"), "MAP01"))
     if GEN_MAPS_DIR.exists():
         from doom_env.wad import list_maps, read_wad
 
-        for wad in sorted(GEN_MAPS_DIR.glob("*.wad")):
-            for mname in list_maps(read_wad(wad)):
-                maps.append((str(wad), mname))
+        for pack_idx, wad in enumerate(sorted(GEN_MAPS_DIR.glob("*.wad"))):
+            for m_idx, mname in enumerate(list_maps(read_wad(wad))):
+                seed = pack_idx * 99 + m_idx
+                tier = (seed % 4) + 1
+                if tiers is None or tier in tiers:
+                    maps.append((str(wad), mname))
     return maps
 
 
@@ -137,7 +142,7 @@ def _worker_loop(
 
                 cur_keys = int(obs["vitals"][8:14].sum())
                 if cur_keys > prev_keys:
-                    reward += 3.0 * (cur_keys - prev_keys)
+                    reward += 4.0 * (cur_keys - prev_keys)
                 prev_keys = cur_keys
 
                 # Progression bonus: door / locked door opened
@@ -147,7 +152,7 @@ def _worker_loop(
                     for s_idx, lock_val in enumerate(door_lock):
                         if lock_val >= 0 and s_idx not in opened_doors and sec_ceil[s_idx] > 8.0:
                             opened_doors.add(s_idx)
-                            reward += 1.5 if lock_val > 0 else 0.8
+                            reward += 4.0 if lock_val > 0 else 0.8
 
                 # Exploration bonus: newly visited 96x96 area
                 cell = (int(priv["x"] // 96), int(priv["y"] // 96))
@@ -245,8 +250,9 @@ def train(args: argparse.Namespace) -> None:
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    map_pool = _discover_maps()
-    print(f"[Train] Discovered {len(map_pool)} maps. Device={device}, Workers={args.num_envs}")
+    tiers = set(args.tiers) if args.tiers else None
+    map_pool = _discover_maps(tiers)
+    print(f"[Train] Discovered {len(map_pool)} maps (tiers={sorted(tiers) if tiers else 'all'}). Device={device}, Workers={args.num_envs}")
     plr = PLRSampler(len(map_pool))
 
     ctx = mp.get_context("spawn")
@@ -467,7 +473,7 @@ def train(args: argparse.Namespace) -> None:
                 mean_area = float(np.mean(recent_areas[-50:])) if recent_areas else 0.0
                 print(
                     f"[Upd {update}/{total_updates} | Steps {global_step}] "
-                    f"FPS={fps:.0f} | Ret={mean_ret:.2f} | Exit={exit_rate*100:.1f}% | Areas={mean_area:.1f} | Ent={entropy.item():.2f}"
+                    f"FPS={fps:.0f} | Ret={mean_ret:.2f} | Exit={exit_rate*100:.1f}% | Areas={mean_area:.1f} | Ent={entropy.item():.2f} | Loss={loss.item():.3f}"
                 )
                 WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
                 torch.save({"model": net.state_dict(), "step": global_step}, WEIGHTS_PATH)
@@ -501,6 +507,7 @@ def main() -> None:
     parser.add_argument("--log-interval", type=int, default=5)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--tiers", type=int, nargs="+", default=None)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     train(args)
