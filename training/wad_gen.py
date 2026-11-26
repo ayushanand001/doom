@@ -164,7 +164,13 @@ def generate_map(seed: int, tier: int = 4) -> str:
     """Generate a procedural UDMF TEXTMAP string for the given seed and tier (1..4)."""
     rng = random.Random(seed)
 
-    if tier == 1:
+    if tier == 0:
+        cols, rows = (2, 2)
+        target_rooms = 4
+        door_prob = 0.0
+        n_locks = 0
+        enemy_range = (4, 6)
+    elif tier == 1:
         cols, rows = rng.choice([(2, 1), (2, 2)])
         target_rooms = cols * rows
         door_prob = 0.0
@@ -235,15 +241,16 @@ def generate_map(seed: int, tier: int = 4) -> str:
                 parent[v] = u
                 q.append(v)
 
-    exit_room = max(dist, key=lambda k: dist[k])
+    exit_room = None if tier == 0 else max(dist, key=lambda k: dist[k])
 
     # Path from start to exit_room
     main_path = []
-    cur_p = exit_room
-    while cur_p is not None:
-        main_path.append(cur_p)
-        cur_p = parent[cur_p]
-    main_path.reverse()
+    if exit_room is not None:
+        cur_p = exit_room
+        while cur_p is not None:
+            main_path.append(cur_p)
+            cur_p = parent[cur_p]
+        main_path.reverse()
 
     # Assign edge types: "hall", "door", or ("lock", key_color)
     edge_kind: dict[tuple[tuple[int, int], tuple[int, int]], tuple[str, str | None]] = {}
@@ -466,8 +473,14 @@ def generate_map(seed: int, tier: int = 4) -> str:
             angle=rng.choice([0, 90, 180, 270]),
         )
 
-    # Place helpful pickups (ammo, health, shotgun in tiers 2-4)
-    if tier >= 2 and len(order) >= 2:
+    # Place helpful pickups (ammo, health, shotgun in tier 0 / tiers 2-4)
+    if tier == 0:
+        builder.add_thing(px + 24, py, THING_SHOTGUN)
+        for dx, dy in ((-24, 0), (0, 24), (0, -24)):
+            builder.add_thing(px + dx, py + dy, THING_SHELLS)
+            builder.add_thing(px + dx, py + dy, THING_CLIP)
+        builder.add_thing(px + 24, py + 24, THING_STIMPACK)
+    elif tier >= 2 and len(order) >= 2:
         sr = rng.choice(order[:-1])
         sx, sy = room_center(*sr)
         builder.add_thing(sx + 48, sy - 48, THING_SHOTGUN)
@@ -510,3 +523,7 @@ if __name__ == "__main__":
         pack_path = out.parent / f"pack_{pack_idx}.wad"
         mnames = build_wad(pack_path, chunk)
         print(f"Wrote {pack_path.name}: {len(mnames)} maps ({mnames[0]}..{mnames[-1]})")
+    # Combat-only arenas (tier 0)
+    combat_specs = [(9000 + s, 0) for s in range(32)]
+    cnames = build_wad(out.parent / "combat_pack.wad", combat_specs)
+    print(f"Wrote combat_pack.wad: {len(cnames)} maps ({cnames[0]}..{cnames[-1]})")

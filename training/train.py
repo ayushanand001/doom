@@ -42,7 +42,13 @@ def _discover_maps(tiers: set[int] | None = None) -> list[tuple[str, str]]:
     if GEN_MAPS_DIR.exists():
         from doom_env.wad import list_maps, read_wad
 
-        for pack_idx, wad in enumerate(sorted(GEN_MAPS_DIR.glob("*.wad"))):
+        for wad in sorted(GEN_MAPS_DIR.glob("*.wad")):
+            if wad.name == "combat_pack.wad":
+                if tiers is not None and 0 in tiers:
+                    for mname in list_maps(read_wad(wad)):
+                        maps.append((str(wad), mname))
+                continue
+            pack_idx = int(wad.stem.split("_")[1]) if "_" in wad.stem and wad.stem.split("_")[1].isdigit() else 0
             for m_idx, mname in enumerate(list_maps(read_wad(wad))):
                 seed = pack_idx * 99 + m_idx
                 tier = (seed % 4) + 1
