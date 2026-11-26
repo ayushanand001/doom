@@ -432,21 +432,23 @@ def generate_map(seed: int, tier: int = 4) -> str:
                             monsteruse=True,
                             repeatspecial=True,
                         )
-                elif p_cur["kind"] == "exit" or p_nbr["kind"] == "exit":
-                    # Crossing into the exit room triggers Exit_Normal (243)
-                    sd_f = builder.add_sidedef(sec)
-                    sd_b = builder.add_sidedef(nsec)
-                    builder.add_linedef(
-                        v1, v2, sd_f,
-                        sideback=sd_b,
-                        twosided=True,
-                        special=243,
-                        playercross=True,
-                    )
                 else:
                     sd_f = builder.add_sidedef(sec)
                     sd_b = builder.add_sidedef(nsec)
                     builder.add_linedef(v1, v2, sd_f, sideback=sd_b, twosided=True)
+
+    # Add guaranteed Exit_Normal (243) trigger box in the center of exit_room (never blocked by doors)
+    if exit_room is not None:
+        ex_sec = cell_sector[(2 * exit_room[0], 2 * exit_room[1])]
+        ex_cx, ex_cy = room_center(*exit_room)
+        r_pad = 48.0
+        ev0 = builder.add_vertex(ex_cx - r_pad, ex_cy - r_pad)
+        ev1 = builder.add_vertex(ex_cx - r_pad, ex_cy + r_pad)
+        ev2 = builder.add_vertex(ex_cx + r_pad, ex_cy + r_pad)
+        ev3 = builder.add_vertex(ex_cx + r_pad, ex_cy - r_pad)
+        esd = builder.add_sidedef(ex_sec)
+        for va, vb in ((ev0, ev1), (ev1, ev2), (ev2, ev3), (ev3, ev0)):
+            builder.add_linedef(va, vb, esd, sideback=esd, twosided=True, special=243, playercross=True)
 
     # Place player start in (0, 0)
     px, py = room_center(*start)
