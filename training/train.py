@@ -395,7 +395,7 @@ def train(args: argparse.Namespace) -> None:
     net = SpatialDoomNet(hidden_dim=256).to(device)
     if args.resume and WEIGHTS_PATH.exists():
         ckpt = torch.load(WEIGHTS_PATH, map_location=device, weights_only=True)
-        net.load_state_dict(ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt)
+        net.load_state_dict(ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt, strict=False)
         print(f"[Train] Resumed weights from {WEIGHTS_PATH}")
 
     optimizer = torch.optim.Adam(net.parameters(), lr=args.lr, eps=1e-5)

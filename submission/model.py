@@ -208,6 +208,8 @@ class SpatialDoomNet(nn.Module):
         # 5. Recurrent GRU core
         fusion_dim = 96 + 64 + 64 + 48  # 272
         self.fusion_fc = nn.Sequential(nn.Linear(fusion_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU())
+        # Explicit locked-door bookmark residual: [has_seen_lock, has_key, backtrack_active, lock_dx, lock_dy]
+        self.lock_summary_fc = nn.Sequential(nn.Linear(5, 32), nn.ReLU(), nn.Linear(32, hidden_dim))
         self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
 
         # 6. Policy (9 Bernoullis) & Value heads
@@ -230,6 +232,8 @@ class SpatialDoomNet(nn.Module):
                     nn.init.zeros_(m.bias)
         nn.init.orthogonal_(self.actor.weight, gain=0.01)
         nn.init.orthogonal_(self.critic.weight, gain=1.0)
+        nn.init.zeros_(self.lock_summary_fc[2].weight)
+        nn.init.zeros_(self.lock_summary_fc[2].bias)
 
     def encode_step(
         self,
@@ -277,6 +281,18 @@ class SpatialDoomNet(nn.Module):
         vit_z = self.vitals_fc(torch.cat([v_norm, prev_act], dim=-1))
 
         fused = self.fusion_fc(torch.cat([ray_z, ent_z, grid_z, vit_z], dim=-1))
+
+        # Explicit egocentric locked-door bookmark summary (100% from legal observations)
+        lock_map = new_grid[:, 3]  # (B, H, W)
+        lock_mass = lock_map.sum(dim=(1, 2)).clamp(min=1e-6)
+        has_lock = (lock_map.amax(dim=(1, 2)) > 0.1).float()
+        has_key = (vitals[:, 8:14].sum(dim=-1) > 0.5).float()
+        backtrack = has_lock * has_key
+        lock_dx = ((lock_map * self.grid_mem.base_gx).sum(dim=(1, 2)) / lock_mass) * has_lock
+        lock_dy = ((lock_map * self.grid_mem.base_gy).sum(dim=(1, 2)) / lock_mass) * has_lock
+        bookmark_vec = torch.stack([has_lock, has_key, backtrack, lock_dx, lock_dy], dim=-1)
+        fused = fused + self.lock_summary_fc(bookmark_vec)
+
         return fused, new_grid
 
     def forward_step(

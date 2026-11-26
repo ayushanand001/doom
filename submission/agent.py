@@ -32,7 +32,7 @@ class DoomAgent:
         if ckpt_path.exists():
             state = torch.load(ckpt_path, map_location=self.device, weights_only=True)
             model_state = state["model"] if isinstance(state, dict) and "model" in state else state
-            self.net.load_state_dict(model_state)
+            self.net.load_state_dict(model_state, strict=False)
         self.net.eval()
 
         self.hx: torch.Tensor | None = None

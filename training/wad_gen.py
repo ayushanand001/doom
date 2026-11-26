@@ -162,6 +162,11 @@ class UDMFBuilder:
 
 def generate_map(seed: int, tier: int = 4) -> str:
     """Generate a procedural UDMF TEXTMAP string for the given seed and tier (1..4)."""
+    return generate_map_with_meta(seed, tier)[0]
+
+
+def generate_map_with_meta(seed: int, tier: int = 4) -> tuple[str, dict]:
+    """Generate a procedural UDMF TEXTMAP string and room-graph metadata for training."""
     rng = random.Random(seed)
 
     if tier == 0:
@@ -495,7 +500,16 @@ def generate_map(seed: int, tier: int = 4) -> str:
             rng.choice([THING_STIMPACK, THING_CLIP, THING_SHELLS, THING_ARMOR_BONUS]),
         )
 
-    return builder.to_textmap()
+    meta = {
+        "adj": adj,
+        "edge_kind": edge_kind,
+        "key_placements": key_placements,
+        "exit_room": exit_room,
+        "room_centers": {r: room_center(*r) for r in visited},
+        "stride": ROOM_SIZE + CONN_SIZE,
+        "room_size": ROOM_SIZE,
+    }
+    return builder.to_textmap(), meta
 
 
 def build_wad(out_path: str | Path, seeds_and_tiers: list[tuple[int, int]]) -> list[str]:
