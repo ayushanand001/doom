@@ -131,10 +131,11 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as td:
         wad = Path(td) / "demo_maps.wad"
-        mnames = build_wad(wad, [(2000, 1), (2001, 2), (2002, 3)])
-        record_episode(wad, mnames[0], "Unseen Tier 1 (seed=2000)", OUT_DIR / "demo_tier1", ticks=1600)
+        mnames = build_wad(wad, [(2000, 1), (2001, 2), (2002, 3), (2003, 4)])
+        record_episode(wad, mnames[0], "Unseen Tier 1 (seed=2000)", OUT_DIR / "demo_tier1", ticks=2100)
         record_episode(wad, mnames[1], "Unseen Tier 2 (seed=2001)", OUT_DIR / "demo_tier2", ticks=2100)
-        record_episode(wad, mnames[2], "Unseen Tier 3 (seed=2002)", OUT_DIR / "demo_tier3", ticks=2400)
+        record_episode(wad, mnames[2], "Unseen Tier 3 (seed=2002)", OUT_DIR / "demo_tier3", ticks=3500)
+        record_episode(wad, mnames[3], "Unseen Tier 4 (seed=2003)", OUT_DIR / "demo_tier4", ticks=4200)
 
 
 if __name__ == "__main__":

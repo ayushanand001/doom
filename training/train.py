@@ -183,17 +183,32 @@ def _worker_loop(
                             reward += r_door
                             ep_comp["prog"] += r_door
 
-                # Combat aiming shaping: reward shooting when an enemy is centered in FOV
+                # Combat aiming & trigger-discipline shaping
                 ent_m = obs["visible_entities"]["mask"]
                 ent_t = obs["visible_entities"]["entity_type"]
                 ent_f = obs["visible_entities"]["features"]
-                enemy_centered = any(
-                    ent_m[ei] == 1 and ent_t[ei] in (1, 2, 3) and abs(ent_f[ei, 1]) < 0.18 and ent_f[ei, 2] > 0.8
-                    for ei in range(len(ent_m))
-                )
-                if enemy_centered and action[6] == 1 and obs["vitals"][3] > 0:
-                    reward += 0.04
-                    ep_comp["aim"] += 0.04
+                enemy_centered = False
+                enemy_in_cone = False
+                for ei in range(len(ent_m)):
+                    if ent_m[ei] == 1 and ent_t[ei] in (1, 2, 3):
+                        s_ang, c_ang = abs(float(ent_f[ei, 1])), float(ent_f[ei, 2])
+                        if s_ang < 0.15 and c_ang > 0.85:
+                            enemy_centered = True
+                            enemy_in_cone = True
+                            break
+                        if s_ang < 0.25 and c_ang > 0.70:
+                            enemy_in_cone = True
+
+                if enemy_centered:
+                    reward += 0.02
+                    ep_comp["aim"] += 0.02
+                    if action[6] == 1 and obs["vitals"][3] > 0:
+                        reward += 0.06
+                        ep_comp["aim"] += 0.06
+                elif action[6] == 1 and not enemy_in_cone:
+                    # Penalize random firing when no enemy is in front
+                    reward -= 0.025
+                    ep_comp["aim"] -= 0.025
 
                 # Exploration bonus: newly visited 96x96 area (capped at 3.0 per episode)
                 cell = (int(priv["x"] // 96), int(priv["y"] // 96))
