@@ -84,6 +84,9 @@ def _worker_loop(
     prev_xy = (0.0, 0.0)
     stuck_steps = 0
     expl_total = 0.0
+    seen_lock_xy: tuple[float, float] | None = None
+    prev_lock_dist: float | None = None
+    unlocked_any = False
     ep_comp = {"exit": 0.0, "kill": 0.0, "prog": 0.0, "expl": 0.0, "dmg": 0.0, "aim": 0.0}
     step_idx = 0
 
@@ -95,7 +98,7 @@ def _worker_loop(
         cur_map = (wad_path, map_name)
 
     def reset_episode(map_idx: int):
-        nonlocal visited_cells, opened_doors, prev_action, use_cooldown, prev_kills, prev_dmg, prev_keys, prev_items, prev_hp, prev_xy, stuck_steps, expl_total, ep_comp, step_idx
+        nonlocal visited_cells, opened_doors, prev_action, use_cooldown, prev_kills, prev_dmg, prev_keys, prev_items, prev_hp, prev_xy, stuck_steps, expl_total, seen_lock_xy, prev_lock_dist, unlocked_any, ep_comp, step_idx
         wad_path, map_name = map_pool[map_idx]
         if cur_map != (wad_path, map_name):
             load_map(wad_path, map_name)
@@ -113,6 +116,9 @@ def _worker_loop(
         prev_xy = (float(priv["x"]), float(priv["y"]))
         stuck_steps = 0
         expl_total = 0.0
+        seen_lock_xy = None
+        prev_lock_dist = None
+        unlocked_any = False
         ep_comp = {"exit": 0.0, "kill": 0.0, "prog": 0.0, "expl": 0.0, "dmg": 0.0, "aim": 0.0}
         step_idx = 0
         return obs, priv
@@ -181,13 +187,37 @@ def _worker_loop(
                 # Progression bonus: door / locked door opened
                 door_lock = priv.get("door_lock")
                 sec_ceil = priv.get("sector_ceiling")
+                has_closed_lock = False
                 if door_lock is not None and sec_ceil is not None:
                     for s_idx, lock_val in enumerate(door_lock):
+                        if lock_val > 0 and sec_ceil[s_idx] <= 8.0:
+                            has_closed_lock = True
                         if lock_val >= 0 and s_idx not in opened_doors and sec_ceil[s_idx] > 8.0:
                             opened_doors.add(s_idx)
+                            if lock_val > 0:
+                                unlocked_any = True
                             r_door = 5.0 if lock_val > 0 else 0.8
                             reward += r_door
                             ep_comp["prog"] += r_door
+
+                # Training-only bookmark of locked door & keycard-backtracking shaping
+                if seen_lock_xy is None:
+                    r_types = obs["rays"]["hit_type"]
+                    r_dists = obs["rays"]["distance"]
+                    lock_idxs = np.where((r_types == 3) & (r_dists < 0.99))[0]
+                    if len(lock_idxs) > 0:
+                        li = int(lock_idxs[np.argmin(r_dists[lock_idxs])])
+                        ang_rad = np.deg2rad(float(priv["angle"])) + li * (2.0 * np.pi / 64.0)
+                        d_u = float(r_dists[li]) * 1024.0
+                        seen_lock_xy = (float(priv["x"]) + d_u * np.cos(ang_rad), float(priv["y"]) + d_u * np.sin(ang_rad))
+                        prev_lock_dist = d_u
+                if cur_keys > 0 and has_closed_lock and seen_lock_xy is not None:
+                    cur_ld = float(np.hypot(seen_lock_xy[0] - float(priv["x"]), seen_lock_xy[1] - float(priv["y"])))
+                    if prev_lock_dist is not None:
+                        r_back = float(np.clip(0.10 * (prev_lock_dist - cur_ld) / 64.0, -0.1, 0.1))
+                        reward += r_back
+                        ep_comp["prog"] += r_back
+                    prev_lock_dist = cur_ld
 
                 # Combat aiming & trigger-discipline shaping
                 ent_m = obs["visible_entities"]["mask"]
@@ -222,7 +252,10 @@ def _worker_loop(
                 loop_closure = 0.0
                 if first_visit_step is None:
                     visited_cells[cell] = step_idx
-                    if expl_total < 3.0:
+                    if unlocked_any:
+                        reward += 0.4
+                        ep_comp["prog"] += 0.4
+                    elif (cur_keys == 0 or not has_closed_lock) and expl_total < 3.0:
                         r_exp = min(0.15, 3.0 - expl_total)
                         expl_total += r_exp
                         reward += r_exp
