@@ -126,12 +126,41 @@ class EgocentricGridMemory(nn.Module):
         src_y = sin_t * gx + cos_t * gy + dy_norm
         sample_grid = torch.stack([src_x, src_y], dim=-1)
 
+        # Track previous locked-door centroid so off-grid locks persist on the perimeter
+        prev_lock = grid[:, 3]
+        prev_has_lock = prev_lock.amax(dim=(1, 2)) > 0.1
+        prev_mass = prev_lock.sum(dim=(1, 2)).clamp(min=1e-6)
+        prev_cx = (prev_lock * self.base_gx).sum(dim=(1, 2)) / prev_mass
+        prev_cy = (prev_lock * self.base_gy).sum(dim=(1, 2)) / prev_mass
+
         warped = F.grid_sample(
             grid, sample_grid, mode="bilinear", padding_mode="zeros", align_corners=True
         )
         # Preserve static map structure (visited, walls, doors, locked doors); decay dynamic entities
         decay = torch.tensor([0.9995, 0.999, 0.9995, 1.0, 0.70, 0.95], device=device).view(1, GRID_CHANNELS, 1, 1)
         warped = warped * decay
+
+        # Clear stale lock memory when player has a key and presses USE right at the lock
+        has_key_b = vitals[:, 8:14].sum(dim=-1) > 0.5
+        pressed_use = prev_act[:, 7] > 0.5
+        near_lock = (prev_cx.abs() < 0.35) & (prev_cy.abs() < 0.35)
+        unlock_attempt = prev_has_lock & has_key_b & pressed_use & near_lock
+        if unlock_attempt.any():
+            warped[unlock_attempt, 3] = warped[unlock_attempt, 3] * 0.05
+
+        # Re-anchor off-grid locked door onto the 15x15 perimeter so long-horizon backtracking never forgets it
+        tx = prev_cx - dx_norm.view(B)
+        ty = prev_cy - dy_norm.view(B)
+        cos_v, sin_v = cos_t.view(B), sin_t.view(B)
+        new_cx = cos_v * tx + sin_v * ty
+        new_cy = -sin_v * tx + cos_v * ty
+        lost_offgrid = prev_has_lock & (~unlock_attempt) & (warped[:, 3].amax(dim=(1, 2)) < 0.1)
+        if lost_offgrid.any():
+            scale = torch.clamp(torch.maximum(new_cx.abs(), new_cy.abs()), min=1.0)
+            bx = torch.clamp(torch.round(((new_cx / scale) * 0.5 + 0.5) * (self.grid_size - 1)).long(), 0, self.grid_size - 1)
+            by = torch.clamp(torch.round(((new_cy / scale) * 0.5 + 0.5) * (self.grid_size - 1)).long(), 0, self.grid_size - 1)
+            b_lost = torch.arange(B, device=device)[lost_offgrid]
+            warped[b_lost, 3, by[lost_offgrid], bx[lost_offgrid]] = 1.0
 
         # 2. Mark player's current center cell as visited (channel 0)
         warped[:, 0, self.half, self.half] = 1.0

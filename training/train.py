@@ -214,7 +214,7 @@ def _worker_loop(
                 if cur_keys > 0 and has_closed_lock and seen_lock_xy is not None:
                     cur_ld = float(np.hypot(seen_lock_xy[0] - float(priv["x"]), seen_lock_xy[1] - float(priv["y"])))
                     if prev_lock_dist is not None:
-                        r_back = float(np.clip(0.10 * (prev_lock_dist - cur_ld) / 64.0, -0.1, 0.1))
+                        r_back = float(np.clip(0.25 * (prev_lock_dist - cur_ld) / 64.0, -0.2, 0.25))
                         reward += r_back
                         ep_comp["prog"] += r_back
                     prev_lock_dist = cur_ld
